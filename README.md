@@ -2,6 +2,8 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/mrbaazzman)
 
+<a href="https://recomplauncher.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+
 Static ARMv7-A -> C11 -> MinGW-w64 x86-64 recompilation of **Asphalt 6: Adrenaline HD 3.7.0** (`libasphalt6.so`).
 
 - **No copyrighted game assets are included**: you must supply your own legal `Asphalt 6 HD 3.7.0.apk`.
