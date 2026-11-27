@@ -1478,13 +1478,33 @@ int a6pak_read_self(const char *name, uint8_t **out_buf, size_t *out_len) {
     return ok;
 }
 
+/* Optional data folder from --data <dir> (empty: %LOCALAPPDATA%\Asphalt6HD as before). */
+static char g_data_dir[MAX_PATH];
+
+void installer_set_data_dir(const char *dir) {
+    snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir ? dir : "");
+}
+
 static int a6pak_local_base(char *out, size_t cap) {
+    if (g_data_dir[0]) {
+        snprintf(out, cap, "%.240s", g_data_dir);
+        return 1;
+    }
     char local[MAX_PATH] = {0};
     if (!GetEnvironmentVariableA("LOCALAPPDATA", local, MAX_PATH) || !local[0]) {
         if (!GetTempPathA(MAX_PATH, local)) return 0;
     }
     snprintf(out, cap, "%.240s\\Asphalt6HD", local);
     return 1;
+}
+
+/* Extracted ANGLE DLLs and res/raw files: under <data>\cache with --data, else the base. */
+static int a6pak_cache_base(char *out, size_t cap) {
+    if (g_data_dir[0]) {
+        snprintf(out, cap, "%.230s\\cache", g_data_dir);
+        return 1;
+    }
+    return a6pak_local_base(out, cap);
 }
 
 int a6pak_local_userdata_dir(char *out_dir, size_t cap) {
@@ -1497,7 +1517,7 @@ int a6pak_local_userdata_dir(char *out_dir, size_t cap) {
 
 int a6pak_extract_angle_self(char *out_dir, size_t cap) {
     char base[MAX_PATH] = {0};
-    if (!a6pak_local_base(base, sizeof(base))) return 0;
+    if (!a6pak_cache_base(base, sizeof(base))) return 0;
     snprintf(out_dir, cap, "%.220s\\angle", base);
     mkdirs_dir(out_dir);
 
@@ -1535,7 +1555,7 @@ int a6pak_extract_angle_self(char *out_dir, size_t cap) {
 int a6pak_cache_raw_self(const char *base_name, char *out_path, size_t cap) {
     if (!base_name || !base_name[0]) return 0;
     char base[MAX_PATH] = {0};
-    if (!a6pak_local_base(base, sizeof(base))) return 0;
+    if (!a6pak_cache_base(base, sizeof(base))) return 0;
     char key[160];
     snprintf(key, sizeof(key), "res/raw/%.140s", base_name);
 
@@ -1572,6 +1592,36 @@ int installer_read_asset(const char *apk_path, const char *extract_dir,
         if (read_whole_file_mem(path, out_buf, out_len)) return 1;
     }
     return installer_read_apk_asset(apk_path, entry_name, out_buf, out_len);
+}
+
+/* Guest data cells the engine fills in (must match runtime/guest_data.c and tools/patch_guest.py). */
+static const struct { const char *name; uint32_t addr; } syms_patch[9] = {
+    { "_ctype_",            0x1200000u },
+    { "_tolower_tab_",      0x1200200u },
+    { "_toupper_tab_",      0x1200480u },
+    { "SL_IID_ENGINE",      0x1201000u },
+    { "SL_IID_PLAY",        0x1201004u },
+    { "SL_IID_BUFFERQUEUE", 0x1201008u },
+    { "__sF",               0x1202000u },
+    { "__stack_chk_guard",  0x1202200u },
+    { "__dso_handle",       0x1202204u },
+};
+
+/* guest.bin is made only from the APK's libasphalt6.so and this relocator, so a new engine
+ * can reuse it while this key stays the same. Bump A6_GUEST_FORMAT when patch_guest_to_mem's
+ * output changes; the data cell addresses above are hashed in on their own. */
+#define A6_GUEST_FORMAT 1
+#define A6_GUEST_KEY_ENTRY "build/guest.ver"
+
+static void guest_build_key(char *out, size_t cap) {
+    uint32_t crc = 0;
+    for (size_t k = 0; k < 9; k++) {
+        uint8_t a[4];
+        wr32le(a, syms_patch[k].addr);
+        crc = crc32_update(crc, (const uint8_t *)syms_patch[k].name, strlen(syms_patch[k].name) + 1);
+        crc = crc32_update(crc, a, 4);
+    }
+    snprintf(out, cap, "asphalt6-guest %d %08x\n", A6_GUEST_FORMAT, (unsigned)crc);
 }
 
 /* Pure C11 ELF32/ARM relocator & guest.bin builder (mirrors recomp/elf_image.py + patch_guest.py) */
@@ -1643,18 +1693,6 @@ static int patch_guest_to_mem(const uint8_t *elf, size_t elf_len,
         sym_count = (dt_strtab - dt_symtab) / 16u;
     }
 
-    static const struct { const char *name; uint32_t addr; } syms_patch[9] = {
-        { "_ctype_",            0x1200000u },
-        { "_tolower_tab_",      0x1200200u },
-        { "_toupper_tab_",      0x1200480u },
-        { "SL_IID_ENGINE",      0x1201000u },
-        { "SL_IID_PLAY",        0x1201004u },
-        { "SL_IID_BUFFERQUEUE", 0x1201008u },
-        { "__sF",               0x1202000u },
-        { "__stack_chk_guard",  0x1202200u },
-        { "__dso_handle",       0x1202204u },
-    };
-
     uint32_t rel_tables[2][2] = { { dt_rel, dt_relsz }, { dt_jmprel, dt_pltrelsz } };
     for (int t = 0; t < 2; t++) {
         uint32_t raddr = rel_tables[t][0], rsz = rel_tables[t][1];
@@ -1720,6 +1758,71 @@ static int write_all_fp(FILE *fp, const uint8_t *buf, size_t len) {
         off += w;
     }
     return 1;
+}
+
+/* Appends one stored (uncompressed) payload entry at the end of out. */
+static int a6out_add_mem(FILE *out, A6OutRec *r, const char *name, const uint8_t *buf, size_t len) {
+    r->name = _strdup(name);
+    r->offset = (uint64_t)_ftelli64(out);
+    r->comp_size = len;
+    r->uncomp_size = len;
+    r->crc32 = crc32_update(0, buf, len);
+    r->method = 0;
+    return r->name && write_all_fp(out, buf, len);
+}
+
+/* Appends src's entry as it is stored there (no recompression). Stored entries are
+ * checked against their CRC on the way, so a damaged source is never copied.
+ * 1: copied. 0: src unreadable or damaged. -1: writing failed. */
+static int a6out_copy_entry(FILE *out, A6OutRec *r, const A6Pak *src, const A6PakEntry *se) {
+    r->name = _strdup(se->name);
+    r->offset = (uint64_t)_ftelli64(out);
+    r->comp_size = se->comp_size;
+    r->uncomp_size = se->uncomp_size;
+    r->crc32 = se->crc32;
+    r->method = se->method;
+    if (!r->name) return -1;
+    if (_fseeki64(src->fp, (__int64)se->offset, SEEK_SET) != 0) return 0;
+
+    static uint8_t buf[1u << 20];
+    uint64_t left = se->comp_size;
+    uint32_t crc = 0;
+    while (left > 0) {
+        size_t want = left > sizeof(buf) ? sizeof(buf) : (size_t)left;
+        if (fread(buf, 1, want, src->fp) != want) return 0;
+        if (!write_all_fp(out, buf, want)) return -1;
+        if (se->method == 0) crc = crc32_update(crc, buf, want);
+        left -= want;
+    }
+    return se->method != 0 || (se->comp_size == se->uncomp_size && crc == se->crc32);
+}
+
+/* Writes the TOC and the 24-byte A6PK footer after the entries. */
+static int a6out_finish(FILE *out, const A6OutRec *recs, uint32_t nrecs) {
+    uint64_t toc_off = (uint64_t)_ftelli64(out);
+    for (uint32_t i = 0; i < nrecs; i++) {
+        uint16_t nlen = (uint16_t)strlen(recs[i].name);
+        uint8_t rec_hdr[2];
+        uint8_t meta[29];
+        wr16le(rec_hdr, nlen);
+        wr64le(meta + 0, recs[i].offset);
+        wr64le(meta + 8, recs[i].comp_size);
+        wr64le(meta + 16, recs[i].uncomp_size);
+        wr32le(meta + 24, recs[i].crc32);
+        meta[28] = recs[i].method;
+        if (!write_all_fp(out, rec_hdr, 2) ||
+            !write_all_fp(out, (const uint8_t *)recs[i].name, nlen) ||
+            !write_all_fp(out, meta, 29)) {
+            return 0;
+        }
+    }
+    uint64_t toc_sz = (uint64_t)_ftelli64(out) - toc_off;
+    uint8_t ftr[24];
+    wr64le(ftr + 0, toc_off);
+    wr64le(ftr + 8, toc_sz);
+    wr32le(ftr + 16, nrecs);
+    memcpy(ftr + 20, "A6PK", 4);
+    return write_all_fp(out, ftr, 24);
 }
 
 int installer_install_standalone_from_setup(
@@ -1817,19 +1920,15 @@ int installer_install_standalone_from_setup(
     uint32_t nrecs = 0;
     int ok = (recs != NULL);
 
-    /* 1. Append build/guest.bin */
-    if (ok) {
-        A6OutRec *r = &recs[nrecs++];
-        r->name = _strdup("build/guest.bin");
-        r->offset = (uint64_t)_ftelli64(out);
-        r->comp_size = guest_len;
-        r->uncomp_size = guest_len;
-        r->crc32 = crc32_update(0, guest_mem, guest_len);
-        r->method = 0;
-        ok = write_all_fp(out, guest_mem, guest_len);
-    }
+    /* 1. Append build/guest.bin and the key of the relocator that made it */
+    if (ok) ok = a6out_add_mem(out, &recs[nrecs++], "build/guest.bin", guest_mem, guest_len);
     free(guest_mem);
     guest_mem = NULL;
+    if (ok) {
+        char key[64];
+        guest_build_key(key, sizeof(key));
+        ok = a6out_add_mem(out, &recs[nrecs++], A6_GUEST_KEY_ENTRY, (const uint8_t *)key, strlen(key));
+    }
 
     /* 2. Append APK raw resources and installer PNGs */
     int got_data_txt = 0, got_pack_info = 0;
@@ -1845,14 +1944,7 @@ int installer_install_standalone_from_setup(
         size_t len = 0;
         if (!apk_zip_read(&apk, e, &buf, &len)) { ok = 0; break; }
 
-        A6OutRec *r = &recs[nrecs++];
-        r->name = _strdup(e->name);
-        r->offset = (uint64_t)_ftelli64(out);
-        r->comp_size = len;
-        r->uncomp_size = len;
-        r->crc32 = crc32_update(0, buf, len);
-        r->method = 0;
-        ok = write_all_fp(out, buf, len);
+        ok = a6out_add_mem(out, &recs[nrecs++], e->name, buf, len);
         free(buf);
 
         if (strcmp(e->name, "res/raw/data.txt") == 0) got_data_txt = 1;
@@ -1864,57 +1956,12 @@ int installer_install_standalone_from_setup(
     /* 3. Copy already-compressed ANGLE DLLs straight from setup_pak */
     const A6PakEntry *dlls[3] = { pe_egl, pe_gles, pe_d3dc };
     for (int d = 0; ok && d < 3; d++) {
-        const A6PakEntry *se = dlls[d];
-        if (!se) continue;
-        uint8_t *raw_comp = (uint8_t *)malloc((size_t)(se->comp_size ? se->comp_size : 1));
-        if (!raw_comp) { ok = 0; break; }
-        _fseeki64(setup_pak.fp, (__int64)se->offset, SEEK_SET);
-        if (se->comp_size > 0 && fread(raw_comp, 1, (size_t)se->comp_size, setup_pak.fp) != (size_t)se->comp_size) {
-            free(raw_comp);
-            ok = 0;
-            break;
-        }
-        A6OutRec *r = &recs[nrecs++];
-        r->name = _strdup(se->name);
-        r->offset = (uint64_t)_ftelli64(out);
-        r->comp_size = se->comp_size;
-        r->uncomp_size = se->uncomp_size;
-        r->crc32 = se->crc32;
-        r->method = se->method;
-        ok = write_all_fp(out, raw_comp, (size_t)se->comp_size);
-        free(raw_comp);
+        if (dlls[d]) ok = a6out_copy_entry(out, &recs[nrecs++], &setup_pak, dlls[d]) > 0;
     }
     a6pak_close(&setup_pak);
 
     /* 4. Write TOC + 24-byte A6PK footer */
-    if (ok) {
-        uint64_t toc_off = (uint64_t)_ftelli64(out);
-        for (uint32_t i = 0; ok && i < nrecs; i++) {
-            uint16_t nlen = (uint16_t)strlen(recs[i].name);
-            uint8_t rec_hdr[31];
-            wr16le(rec_hdr, nlen);
-            ok = write_all_fp(out, rec_hdr, 2) &&
-                 write_all_fp(out, (const uint8_t *)recs[i].name, nlen);
-            if (ok) {
-                uint8_t meta[29];
-                wr64le(meta + 0, recs[i].offset);
-                wr64le(meta + 8, recs[i].comp_size);
-                wr64le(meta + 16, recs[i].uncomp_size);
-                wr32le(meta + 24, recs[i].crc32);
-                meta[28] = recs[i].method;
-                ok = write_all_fp(out, meta, 29);
-            }
-        }
-        if (ok) {
-            uint64_t toc_sz = (uint64_t)_ftelli64(out) - toc_off;
-            uint8_t ftr[24];
-            wr64le(ftr + 0, toc_off);
-            wr64le(ftr + 8, toc_sz);
-            wr32le(ftr + 16, nrecs);
-            memcpy(ftr + 20, "A6PK", 4);
-            ok = write_all_fp(out, ftr, 24);
-        }
-    }
+    if (ok) ok = a6out_finish(out, recs, nrecs);
 
     fclose(out);
     for (uint32_t i = 0; i < nrecs; i++) free(recs[i].name);
@@ -1929,6 +1976,187 @@ int installer_install_standalone_from_setup(
 
     if (progress_cb) progress_cb(ctx, 100, "Installation complete!",
                                  "Installed standalone asphalt6_win.exe cleanly.");
+    return 1;
+}
+
+/* The entries of an installed asphalt6_win.exe's payload that came from the APK. */
+static int a6pak_is_apk_entry(const char *name) {
+    return strncmp(name, "build/", 6) == 0 || strncmp(name, "res/", 4) == 0;
+}
+
+/* NULL when the installed payload holds everything taken from the APK, made by this
+ * setup's relocator; else why not, in words for the player. */
+static const char *a6pak_apk_data_missing(const A6Pak *inst) {
+    const A6PakEntry *e_key = a6pak_find(inst, A6_GUEST_KEY_ENTRY);
+    int have_info = 0;
+    for (uint32_t i = 0; i < inst->count; i++) {
+        const char *n = inst->entries[i].name;
+        if (strncmp(n, "res/raw/pack", 12) == 0 && strstr(n, ".info")) have_info = 1;
+    }
+    if (!a6pak_find(inst, "build/guest.bin") || !a6pak_find(inst, "res/raw/data.txt") || !have_info) {
+        return "the installed game is missing data from the APK";
+    }
+    uint8_t *key = NULL;
+    size_t key_len = 0;
+    char want[64];
+    guest_build_key(want, sizeof(want));
+    int same = e_key && e_key->uncomp_size < sizeof(want) &&
+               a6pak_read_entry(inst, e_key, &key, &key_len) &&
+               key_len == strlen(want) && memcmp(key, want, key_len) == 0;
+    free(key);
+    if (!same) return "this update changes how the game is made from the APK";
+    return NULL;
+}
+
+/* 1 when <install_dir>\asphalt6_win.exe was built by this same setup: the same engine
+ * bytes in front of its payload and the same ANGLE runtime, with the APK data in it. */
+int installer_standalone_is_current(const char *install_dir) {
+    char exe_path[1024];
+    snprintf(exe_path, sizeof(exe_path), "%.950s\\asphalt6_win.exe", install_dir);
+
+    A6Pak setup_pak, inst_pak;
+    if (!a6pak_open_self(&setup_pak)) return 0;
+    if (!a6pak_open(exe_path, &inst_pak)) {
+        a6pak_close(&setup_pak);
+        return 0;
+    }
+
+    int ok = 1;
+    const A6PakEntry *pe_exe = a6pak_find(&setup_pak, "asphalt6_win.exe");
+    const A6PakEntry *ie_guest = a6pak_find(&inst_pak, "build/guest.bin");
+    if (!pe_exe || !ie_guest || a6pak_apk_data_missing(&inst_pak) ||
+        ie_guest->offset != pe_exe->uncomp_size) {
+        ok = 0;
+    }
+    for (uint32_t i = 0; ok && i < setup_pak.count; i++) {
+        const A6PakEntry *se = &setup_pak.entries[i];
+        if (strcmp(se->name, "asphalt6_win.exe") == 0) continue;
+        const A6PakEntry *ie = a6pak_find(&inst_pak, se->name);
+        if (!ie || ie->crc32 != se->crc32 || ie->uncomp_size != se->uncomp_size) ok = 0;
+    }
+    if (ok) {
+        uint8_t buf[65536];
+        uint64_t left = pe_exe->uncomp_size;
+        uint32_t crc = 0;
+        _fseeki64(inst_pak.fp, 0, SEEK_SET);
+        while (left > 0) {
+            size_t want = left > sizeof(buf) ? sizeof(buf) : (size_t)left;
+            if (fread(buf, 1, want, inst_pak.fp) != want) { ok = 0; break; }
+            crc = crc32_update(crc, buf, want);
+            left -= want;
+        }
+        if (ok && crc != pe_exe->crc32) ok = 0;
+    }
+    a6pak_close(&inst_pak);
+    a6pak_close(&setup_pak);
+    return ok;
+}
+
+/* Update without the APK: this setup's engine and ANGLE runtime, with the APK-derived
+ * entries (build/guest.bin, res/...) copied from the installed asphalt6_win.exe. Written
+ * through asphalt6_win.exe.tmp, so the installed exe stays whole until the new one is.
+ * 1: done. 0: the install lacks what's needed (why says what). -1: writing failed. */
+int installer_rebuild_standalone_from_install(
+    const char *install_dir,
+    void (*progress_cb)(void *ctx, int pct, const char *status, const char *log_line),
+    void *ctx, char *why, size_t why_cap) {
+    char final_exe[1024], tmp_exe[1024];
+    snprintf(final_exe, sizeof(final_exe), "%.950s\\asphalt6_win.exe", install_dir);
+    snprintf(tmp_exe, sizeof(tmp_exe), "%.950s\\asphalt6_win.exe.tmp", install_dir);
+    if (why && why_cap) why[0] = '\0';
+
+    A6Pak setup_pak = {0}, inst_pak = {0};
+    if (!a6pak_open_self(&setup_pak)) {
+        if (progress_cb) progress_cb(ctx, 0, "Setup payload missing.",
+                                     "ERROR: This Asphalt6_Setup.exe does not contain an embedded game payload.");
+        return -1;
+    }
+    const A6PakEntry *pe_exe = a6pak_find(&setup_pak, "asphalt6_win.exe");
+    if (!pe_exe || !a6pak_find(&setup_pak, "libEGL.dll") || !a6pak_find(&setup_pak, "libGLESv2.dll")) {
+        a6pak_close(&setup_pak);
+        if (progress_cb) progress_cb(ctx, 0, "Incomplete setup payload.",
+                                     "ERROR: Embedded engine or ANGLE runtime missing.");
+        return -1;
+    }
+
+    if (progress_cb) progress_cb(ctx, 10, "Reading the game data from the installed game...", NULL);
+    const char *missing = NULL;
+    if (GetFileAttributesA(final_exe) == INVALID_FILE_ATTRIBUTES) {
+        missing = "the game isn't built in its folder yet";
+    } else if (!a6pak_open(final_exe, &inst_pak)) {
+        missing = "the installed game has no data from the APK in it";
+    } else if ((missing = a6pak_apk_data_missing(&inst_pak)) != NULL) {
+        a6pak_close(&inst_pak);
+    }
+    if (missing) {
+        a6pak_close(&setup_pak);
+        if (why && why_cap) snprintf(why, why_cap, "%s", missing);
+        return 0;
+    }
+
+    if (progress_cb) progress_cb(ctx, 30, "Unpacking the new game executable...", NULL);
+    uint8_t *exe_buf = NULL;
+    size_t exe_len = 0;
+    FILE *out = NULL;
+    A6OutRec *recs = (A6OutRec *)calloc(inst_pak.count + setup_pak.count, sizeof(A6OutRec));
+    uint32_t nrecs = 0;
+    int ok = recs && a6pak_read_entry(&setup_pak, pe_exe, &exe_buf, &exe_len) &&
+             (out = fopen(tmp_exe, "wb")) != NULL && write_all_fp(out, exe_buf, exe_len);
+    free(exe_buf);
+
+    /* guest.bin first, right after the engine, as a fresh install has it. */
+    if (progress_cb) progress_cb(ctx, 50, "Copying the game data from the installed game...", NULL);
+    const A6PakEntry *ie_guest = a6pak_find(&inst_pak, "build/guest.bin");
+    int damaged = 0;
+    for (uint32_t i = 0; ok && i <= inst_pak.count; i++) {
+        const A6PakEntry *ie = i == 0 ? ie_guest : &inst_pak.entries[i - 1];
+        if (i > 0 && (ie == ie_guest || !a6pak_is_apk_entry(ie->name))) continue;
+        int rc = a6out_copy_entry(out, &recs[nrecs++], &inst_pak, ie);
+        if (rc == 0) damaged = 1;
+        ok = rc > 0;
+    }
+    a6pak_close(&inst_pak);
+
+    if (progress_cb) progress_cb(ctx, 80, "Embedding the graphics runtime...", NULL);
+    for (uint32_t i = 0; ok && i < setup_pak.count; i++) {
+        const A6PakEntry *se = &setup_pak.entries[i];
+        if (se == pe_exe) continue;
+        ok = a6out_copy_entry(out, &recs[nrecs++], &setup_pak, se) > 0;
+    }
+    a6pak_close(&setup_pak);
+
+    if (ok) ok = a6out_finish(out, recs, nrecs);
+    if (out && fclose(out) != 0) ok = 0;
+    for (uint32_t i = 0; recs && i < nrecs; i++) free(recs[i].name);
+    free(recs);
+
+    if (damaged) {
+        DeleteFileA(tmp_exe);
+        if (why && why_cap) snprintf(why, why_cap, "the installed game's data from the APK is damaged");
+        return 0;
+    }
+    if (!ok || !MoveFileExA(tmp_exe, final_exe, MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileA(tmp_exe);
+        if (progress_cb) progress_cb(ctx, 0, "Update failed.",
+                                     "ERROR: Failed to write the updated asphalt6_win.exe.");
+        return -1;
+    }
+    if (progress_cb) progress_cb(ctx, 100, "Updated without the APK", NULL);
+    return 1;
+}
+
+/* Holds <install_dir>\asphalt6_setup.lock open until this process ends. Windows closes
+ * (and deletes) it even when the process is killed, so a cancelled run never blocks the
+ * next one; that run then clears the half-written exe it left. 0: another run is active. */
+int installer_prepare_lock(const char *install_dir) {
+    mkdirs_dir(install_dir);
+    char path[1024];
+    snprintf(path, sizeof(path), "%.950s\\asphalt6_setup.lock", install_dir);
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    snprintf(path, sizeof(path), "%.950s\\asphalt6_win.exe.tmp", install_dir);
+    DeleteFileA(path);
     return 1;
 }
 

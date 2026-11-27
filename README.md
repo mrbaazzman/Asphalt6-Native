@@ -2,6 +2,8 @@
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/mrbaazzman)
 
+<a href="https://recomplauncher.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+
 Static ARMv7-A -> C11 -> MinGW-w64 x86-64 recompilation of **Asphalt 6: Adrenaline HD 3.7.0** (`libasphalt6.so`).
 
 - **No copyrighted game assets are included**: you must supply your own legal `Asphalt 6 HD 3.7.0.apk`.
@@ -25,7 +27,7 @@ Download the single standalone **`Asphalt6_Setup.exe`** (`~26.8 MiB`) from GitHu
    - Your install folder contains **only `asphalt6_win.exe`** (and `gamedata/` once copied manually or downloaded).
 4. Launch `asphalt6_win.exe`: if `gamedata/` isn't placed manually, the in-game Gameloft Installer prompts to download & CRC-verify the official game data from Gameloft servers, then shows **`Touch OK and start playing!`**.
 
-Release packaging command (maintainers): `python -u tools\pack_setup.py --jobs 8`.
+Release packaging command (maintainers): `python -u tools\pack_setup.py --jobs 8`. It also writes `build\Asphalt6-Native-<version>-Windows-x64.zip` (`Asphalt6_Setup.exe` with `recomplauncher.json` on top) for RecompLauncher: attach it to every release next to `Asphalt6_Setup.exe`.
 
 ### Option B — Command-Line / Developer Build
 
@@ -76,6 +78,9 @@ Run the game:
 - `ASPHALT6_AUTO_TAPS` / `ASPHALT6_AUTO_KEYS`: Automated tap/key scripts for regression verification.
 - `ASPHALT6_AUDIO_TRACE=1`, `ASPHALT6_VFS_TRACE=1`, `ASPHALT6_GL_TRACE=1`, `ASPHALT6_IMPORT_TRACE=1`, `ASPHALT6_PROFILE=1`: Optional diagnostics.
 - `ASPHALT6_NO_INSTALLER=1`: Skip the startup `gamedata/` installer check in `asphalt6_win.exe`.
+- Optional arguments (used by launchers; without them nothing changes):
+  - `asphalt6_win.exe --data <dir>`: keep saves in `<dir>\userdata`, the runtime cache in `<dir>\cache` and a log in `<dir>\logs` instead of `%LOCALAPPDATA%\Asphalt6HD\`. `--windowed`, `--fps=<n>` and `--no-cap` match `ASPHALT6_WINDOWED=1`, `ASPHALT6_FPS` and `ASPHALT6_NO_CAP=1`.
+  - `Asphalt6_Setup.exe --prepare --game=<apk> --install-dir=<dir>`: install without a window, printing `progress <0-1> <text>` lines. It exits right away when `<dir>` already holds this setup's build, so the APK is only needed when the build changes.
 - Loose custom high-res textures can be placed in `hires/` (checked before `gamedata/`). Run `python tools\gen_hires_ui.py` to generate 2x `*_hires.tga` UI textures into `hires/` from the read-only `gamedata/` UI sheets.
 
 ## Architecture Overview

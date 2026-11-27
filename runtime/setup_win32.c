@@ -54,6 +54,7 @@ typedef struct {
     volatile LONG running;
     int installed_ok;
     int cli_mode;
+    int prepare_mode;
     char cli_apk[MAX_PATH];
     char cli_dir[MAX_PATH];
     HANDLE worker;
@@ -70,6 +71,13 @@ static void on_progress(void *ctx, int pct, const char *status, const char *log_
     (void)ctx;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
+    if (g_app.prepare_mode) {
+        /* Launcher setup step: "progress <0-1> <text>" lines, errors as plain lines. */
+        if (status && status[0]) printf("progress %.2f %s\n", pct / 100.0, status);
+        if (log_line && strncmp(log_line, "ERROR", 5) == 0) printf("%s\n", log_line);
+        fflush(stdout);
+        return;
+    }
     if (g_app.cli_mode) {
         printf("[%3d%%] %s%s%s\n", pct, status ? status : "",
                (status && log_line) ? " - " : "", log_line ? log_line : "");
@@ -304,6 +312,55 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--cli") == 0) g_app.cli_mode = 1;
         else if (strcmp(argv[i], "--apk") == 0 && i + 1 < argc) snprintf(g_app.cli_apk, MAX_PATH, "%s", argv[++i]);
         else if (strcmp(argv[i], "--install-dir") == 0 && i + 1 < argc) snprintf(g_app.cli_dir, MAX_PATH, "%s", argv[++i]);
+        else if (strcmp(argv[i], "--prepare") == 0) g_app.cli_mode = g_app.prepare_mode = 1;
+        else if (strcmp(argv[i], "--game") == 0 && i + 1 < argc) snprintf(g_app.cli_apk, MAX_PATH, "%s", argv[++i]);
+        else if (strncmp(argv[i], "--game=", 7) == 0) snprintf(g_app.cli_apk, MAX_PATH, "%s", argv[i] + 7);
+        else if (strncmp(argv[i], "--install-dir=", 14) == 0) snprintf(g_app.cli_dir, MAX_PATH, "%s", argv[i] + 14);
+    }
+
+    if (g_app.prepare_mode) {
+        /* Windowless setup step for launchers: --prepare [--game <apk>] --install-dir <dir>.
+         * Exits 0 right away when <dir> already holds this setup's build. Without --game, a
+         * new engine is rebuilt from the APK data kept in <dir>\asphalt6_win.exe. */
+        if (GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_UNKNOWN &&
+            AttachConsole(ATTACH_PARENT_PROCESS)) {
+            freopen("CONOUT$", "w", stdout);
+            freopen("CONOUT$", "w", stderr);
+        }
+        if (!g_app.cli_dir[0]) {
+            printf("No install folder given: pass --install-dir <folder>.\n");
+            return 2;
+        }
+        if (!installer_prepare_lock(g_app.cli_dir)) {
+            printf("Another Asphalt 6 setup is running for %s. Wait for it to finish, then try again.\n",
+                   g_app.cli_dir);
+            return 3;
+        }
+        printf("progress 0.00 Checking the installed game\n");
+        fflush(stdout);
+        if (installer_standalone_is_current(g_app.cli_dir)) {
+            printf("progress 1.00 Already set up\n");
+            return 0;
+        }
+        if (!g_app.cli_apk[0]) {
+            /* An update: reuse what the last build took from the APK, kept in the installed exe. */
+            char why[160];
+            int rc = installer_rebuild_standalone_from_install(g_app.cli_dir, on_progress, NULL,
+                                                               why, sizeof(why));
+            if (rc > 0) return 0;
+            if (rc < 0) {
+                printf("Couldn't write the updated game to %s. Make sure there's free space, then set it up again.\n",
+                       g_app.cli_dir);
+                return 1;
+            }
+            printf("The game needs to be set up again from your Asphalt 6 HD 3.7.0 APK: %s. Pick it on the game's page.\n",
+                   why);
+            return 4;
+        }
+        DWORD rc = setup_worker_thread(NULL);
+        if (rc == 0 && g_app.installed_ok) return 0;
+        printf("Setup failed. Pick your own Asphalt 6 HD 3.7.0 APK (with lib/armeabi-v7a/libasphalt6.so) and try again.\n");
+        return 1;
     }
 
     if (g_app.cli_mode) {
