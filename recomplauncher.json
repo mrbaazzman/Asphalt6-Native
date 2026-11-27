@@ -14,7 +14,8 @@
     "program": ["Asphalt6_Setup.exe"],
     "args": ["--prepare", "--game={input:game}", "--install-dir={install}/game"],
     "label": "Builds the game from your APK",
-    "done": ["{install}/game/asphalt6_win.exe"]
+    "done": ["{install}/game/asphalt6_win.exe"],
+    "keeps_copy": true
   },
   "start": {
     "program": ["game/asphalt6_win.exe"],
