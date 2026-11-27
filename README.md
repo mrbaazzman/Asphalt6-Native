@@ -76,6 +76,9 @@ Run the game:
 - `ASPHALT6_AUTO_TAPS` / `ASPHALT6_AUTO_KEYS`: Automated tap/key scripts for regression verification.
 - `ASPHALT6_AUDIO_TRACE=1`, `ASPHALT6_VFS_TRACE=1`, `ASPHALT6_GL_TRACE=1`, `ASPHALT6_IMPORT_TRACE=1`, `ASPHALT6_PROFILE=1`: Optional diagnostics.
 - `ASPHALT6_NO_INSTALLER=1`: Skip the startup `gamedata/` installer check in `asphalt6_win.exe`.
+- Optional arguments (used by launchers; without them nothing changes):
+  - `asphalt6_win.exe --data <dir>`: keep saves in `<dir>\userdata`, the runtime cache in `<dir>\cache` and a log in `<dir>\logs` instead of `%LOCALAPPDATA%\Asphalt6HD\`. `--windowed`, `--fps=<n>` and `--no-cap` match `ASPHALT6_WINDOWED=1`, `ASPHALT6_FPS` and `ASPHALT6_NO_CAP=1`.
+  - `Asphalt6_Setup.exe --prepare --game=<apk> --install-dir=<dir>`: install without a window, printing `progress <0-1> <text>` lines. It exits right away when `<dir>` already holds this setup's build, so the APK is only needed when the build changes.
 - Loose custom high-res textures can be placed in `hires/` (checked before `gamedata/`). Run `python tools\gen_hires_ui.py` to generate 2x `*_hires.tga` UI textures into `hires/` from the read-only `gamedata/` UI sheets.
 
 ## Architecture Overview

@@ -176,9 +176,38 @@ static void ensure_install_cwd(void) {
 #endif
 }
 
+/* Optional launcher arguments. Without them the game starts exactly as before.
+ *   --data <dir>  saves in <dir>\userdata, runtime cache in <dir>\cache, log in <dir>\logs
+ *   --windowed, --fps=<n>, --no-cap  same as ASPHALT6_WINDOWED=1, ASPHALT6_FPS, ASPHALT6_NO_CAP=1 */
+static void apply_launch_args(int argc, char **argv) {
+    const char *data = NULL;
+    char env[64];
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--data") == 0 && i + 1 < argc) data = argv[++i];
+        else if (strncmp(argv[i], "--data=", 7) == 0) data = argv[i] + 7;
+        else if (strcmp(argv[i], "--windowed") == 0) _putenv("ASPHALT6_WINDOWED=1");
+        else if (strcmp(argv[i], "--no-cap") == 0) _putenv("ASPHALT6_NO_CAP=1");
+        else if (strncmp(argv[i], "--fps=", 6) == 0) {
+            snprintf(env, sizeof(env), "ASPHALT6_FPS=%.40s", argv[i] + 6);
+            _putenv(env);
+        }
+    }
+    if (!data || !data[0]) return;
+    installer_set_data_dir(data);
+
+    char logs[MAX_PATH], log_path[MAX_PATH + 32], prev_path[MAX_PATH + 32];
+    snprintf(logs, sizeof(logs), "%.240s\\logs", data);
+    CreateDirectoryA(data, NULL);
+    CreateDirectoryA(logs, NULL);
+    snprintf(log_path, sizeof(log_path), "%s\\asphalt6.log", logs);
+    snprintf(prev_path, sizeof(prev_path), "%s\\asphalt6-previous.log", logs);
+    MoveFileExA(log_path, prev_path, MOVEFILE_REPLACE_EXISTING);
+    if (freopen(log_path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+}
+
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
     SetUnhandledExceptionFilter(unhandled_seh_filter);
+    apply_launch_args(argc, argv);
     ensure_install_cwd();
     if (!platform_init(1280, 720, "Asphalt 6: Adrenaline HD")) {
         fprintf(stderr, "host: platform_init failed\n");

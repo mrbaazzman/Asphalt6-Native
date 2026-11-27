@@ -1478,13 +1478,33 @@ int a6pak_read_self(const char *name, uint8_t **out_buf, size_t *out_len) {
     return ok;
 }
 
+/* Optional data folder from --data <dir> (empty: %LOCALAPPDATA%\Asphalt6HD as before). */
+static char g_data_dir[MAX_PATH];
+
+void installer_set_data_dir(const char *dir) {
+    snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir ? dir : "");
+}
+
 static int a6pak_local_base(char *out, size_t cap) {
+    if (g_data_dir[0]) {
+        snprintf(out, cap, "%.240s", g_data_dir);
+        return 1;
+    }
     char local[MAX_PATH] = {0};
     if (!GetEnvironmentVariableA("LOCALAPPDATA", local, MAX_PATH) || !local[0]) {
         if (!GetTempPathA(MAX_PATH, local)) return 0;
     }
     snprintf(out, cap, "%.240s\\Asphalt6HD", local);
     return 1;
+}
+
+/* Extracted ANGLE DLLs and res/raw files: under <data>\cache with --data, else the base. */
+static int a6pak_cache_base(char *out, size_t cap) {
+    if (g_data_dir[0]) {
+        snprintf(out, cap, "%.230s\\cache", g_data_dir);
+        return 1;
+    }
+    return a6pak_local_base(out, cap);
 }
 
 int a6pak_local_userdata_dir(char *out_dir, size_t cap) {
@@ -1497,7 +1517,7 @@ int a6pak_local_userdata_dir(char *out_dir, size_t cap) {
 
 int a6pak_extract_angle_self(char *out_dir, size_t cap) {
     char base[MAX_PATH] = {0};
-    if (!a6pak_local_base(base, sizeof(base))) return 0;
+    if (!a6pak_cache_base(base, sizeof(base))) return 0;
     snprintf(out_dir, cap, "%.220s\\angle", base);
     mkdirs_dir(out_dir);
 
@@ -1535,7 +1555,7 @@ int a6pak_extract_angle_self(char *out_dir, size_t cap) {
 int a6pak_cache_raw_self(const char *base_name, char *out_path, size_t cap) {
     if (!base_name || !base_name[0]) return 0;
     char base[MAX_PATH] = {0};
-    if (!a6pak_local_base(base, sizeof(base))) return 0;
+    if (!a6pak_cache_base(base, sizeof(base))) return 0;
     char key[160];
     snprintf(key, sizeof(key), "res/raw/%.140s", base_name);
 
@@ -1929,6 +1949,65 @@ int installer_install_standalone_from_setup(
 
     if (progress_cb) progress_cb(ctx, 100, "Installation complete!",
                                  "Installed standalone asphalt6_win.exe cleanly.");
+    return 1;
+}
+
+/* 1 when <install_dir>\asphalt6_win.exe was built by this same setup: the same engine
+ * bytes in front of its payload and the same ANGLE runtime, with the APK data in it. */
+int installer_standalone_is_current(const char *install_dir) {
+    char exe_path[1024];
+    snprintf(exe_path, sizeof(exe_path), "%.950s\\asphalt6_win.exe", install_dir);
+
+    A6Pak setup_pak, inst_pak;
+    if (!a6pak_open_self(&setup_pak)) return 0;
+    if (!a6pak_open(exe_path, &inst_pak)) {
+        a6pak_close(&setup_pak);
+        return 0;
+    }
+
+    int ok = 1;
+    const A6PakEntry *pe_exe = a6pak_find(&setup_pak, "asphalt6_win.exe");
+    const A6PakEntry *ie_guest = a6pak_find(&inst_pak, "build/guest.bin");
+    if (!pe_exe || !ie_guest || !a6pak_find(&inst_pak, "res/raw/data.txt") ||
+        ie_guest->offset != pe_exe->uncomp_size) {
+        ok = 0;
+    }
+    for (uint32_t i = 0; ok && i < setup_pak.count; i++) {
+        const A6PakEntry *se = &setup_pak.entries[i];
+        if (strcmp(se->name, "asphalt6_win.exe") == 0) continue;
+        const A6PakEntry *ie = a6pak_find(&inst_pak, se->name);
+        if (!ie || ie->crc32 != se->crc32 || ie->uncomp_size != se->uncomp_size) ok = 0;
+    }
+    if (ok) {
+        uint8_t buf[65536];
+        uint64_t left = pe_exe->uncomp_size;
+        uint32_t crc = 0;
+        _fseeki64(inst_pak.fp, 0, SEEK_SET);
+        while (left > 0) {
+            size_t want = left > sizeof(buf) ? sizeof(buf) : (size_t)left;
+            if (fread(buf, 1, want, inst_pak.fp) != want) { ok = 0; break; }
+            crc = crc32_update(crc, buf, want);
+            left -= want;
+        }
+        if (ok && crc != pe_exe->crc32) ok = 0;
+    }
+    a6pak_close(&inst_pak);
+    a6pak_close(&setup_pak);
+    return ok;
+}
+
+/* Holds <install_dir>\asphalt6_setup.lock open until this process ends. Windows closes
+ * (and deletes) it even when the process is killed, so a cancelled run never blocks the
+ * next one; that run then clears the half-written exe it left. 0: another run is active. */
+int installer_prepare_lock(const char *install_dir) {
+    mkdirs_dir(install_dir);
+    char path[1024];
+    snprintf(path, sizeof(path), "%.950s\\asphalt6_setup.lock", install_dir);
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    snprintf(path, sizeof(path), "%.950s\\asphalt6_win.exe.tmp", install_dir);
+    DeleteFileA(path);
     return 1;
 }
 

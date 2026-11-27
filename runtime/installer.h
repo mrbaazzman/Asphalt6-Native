@@ -61,6 +61,8 @@ int a6pak_read_self(const char *name, uint8_t **out_buf, size_t *out_len);
 int a6pak_extract_angle_self(char *out_dir, size_t cap);
 int a6pak_cache_raw_self(const char *base_name, char *out_path, size_t cap);
 int a6pak_local_userdata_dir(char *out_dir, size_t cap);
+/* --data <dir>: saves in <dir>\userdata, extracted runtime files in <dir>\cache. */
+void installer_set_data_dir(const char *dir);
 
 /* Offline standalone installer builder: unpacks setup's own A6PAK asphalt6_win.exe + ANGLE DLLs,
  * relocates libasphalt6.so -> guest.bin from apk_path, and writes ONE self-contained
@@ -69,6 +71,10 @@ int installer_install_standalone_from_setup(
     const char *apk_path, const char *install_dir,
     void (*progress_cb)(void *ctx, int pct, const char *status, const char *log_line),
     void *ctx);
+
+/* Asphalt6_Setup.exe --prepare: already built by this setup? / one run at a time. */
+int installer_standalone_is_current(const char *install_dir);
+int installer_prepare_lock(const char *install_dir);
 
 InstallerSession *installer_session_open(const char *apk_path, const char *out_dir,
                                          const char *extract_dir);
