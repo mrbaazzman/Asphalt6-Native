@@ -1,0 +1,56 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "repo": "mrbaazzman/Asphalt6-Native",
+  "name": "Asphalt 6: Adrenaline HD",
+  "inputs": [
+    {
+      "id": "game",
+      "label": "Your own Asphalt 6: Adrenaline HD 3.7.0 Android APK (Asphalt 6 HD 3.7.0.apk).",
+      "formats": [{ "type": "file", "extensions": ["apk"] }]
+    }
+  ],
+  "prepare": {
+    "program": ["Asphalt6_Setup.exe"],
+    "args": ["--prepare", "--game={input:game}", "--install-dir={install}/game"],
+    "label": "Builds the game from your APK",
+    "done": ["{install}/game/asphalt6_win.exe"]
+  },
+  "start": {
+    "program": ["game/asphalt6_win.exe"],
+    "args": ["--data", "{data}"]
+  },
+  "saves": ["{data}/userdata"],
+  "folders": {
+    "saves": [{ "path": "{data}/userdata" }],
+    "logs": [{ "path": "{data}/logs" }],
+    "game": [{ "path": "{install}/game" }]
+  },
+  "settings": [
+    {
+      "id": "window",
+      "label": "Window",
+      "in": "args",
+      "help": "Borderless full screen at your desktop's resolution, or a 1280x720 window. Alt+Enter switches in game.",
+      "choices": [
+        { "label": "Full screen", "args": [] },
+        { "label": "Windowed", "args": ["--windowed"] }
+      ]
+    },
+    {
+      "id": "fps",
+      "label": "Frame rate",
+      "in": "args",
+      "help": "The game follows your monitor's refresh rate with V-Sync. Uncapped turns V-Sync and the frame limit off.",
+      "choices": [
+        { "label": "Monitor refresh rate", "args": [] },
+        { "label": "60 FPS", "args": ["--fps=60"] },
+        { "label": "Uncapped", "args": ["--no-cap"] }
+      ]
+    }
+  ],
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your career and settings.", "open": "saves" },
+    { "id": "logs", "label": "Logs", "help": "The game's log from this run and the one before.", "open": "logs" }
+  ]
+}
