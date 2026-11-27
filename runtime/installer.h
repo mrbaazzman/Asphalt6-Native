@@ -74,6 +74,12 @@ int installer_install_standalone_from_setup(
 
 /* Asphalt6_Setup.exe --prepare: already built by this setup? / one run at a time. */
 int installer_standalone_is_current(const char *install_dir);
+/* --prepare without --game: new engine + the installed exe's APK data. 1 ok, 0 needs the APK
+ * (why says what is missing), -1 write failed. */
+int installer_rebuild_standalone_from_install(
+    const char *install_dir,
+    void (*progress_cb)(void *ctx, int pct, const char *status, const char *log_line),
+    void *ctx, char *why, size_t why_cap);
 int installer_prepare_lock(const char *install_dir);
 
 InstallerSession *installer_session_open(const char *apk_path, const char *out_dir,

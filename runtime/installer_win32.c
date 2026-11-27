@@ -1979,6 +1979,11 @@ int installer_install_standalone_from_setup(
     return 1;
 }
 
+/* The entries of an installed asphalt6_win.exe's payload that came from the APK. */
+static int a6pak_is_apk_entry(const char *name) {
+    return strncmp(name, "build/", 6) == 0 || strncmp(name, "res/", 4) == 0;
+}
+
 /* NULL when the installed payload holds everything taken from the APK, made by this
  * setup's relocator; else why not, in words for the player. */
 static const char *a6pak_apk_data_missing(const A6Pak *inst) {
@@ -2045,6 +2050,99 @@ int installer_standalone_is_current(const char *install_dir) {
     a6pak_close(&inst_pak);
     a6pak_close(&setup_pak);
     return ok;
+}
+
+/* Update without the APK: this setup's engine and ANGLE runtime, with the APK-derived
+ * entries (build/guest.bin, res/...) copied from the installed asphalt6_win.exe. Written
+ * through asphalt6_win.exe.tmp, so the installed exe stays whole until the new one is.
+ * 1: done. 0: the install lacks what's needed (why says what). -1: writing failed. */
+int installer_rebuild_standalone_from_install(
+    const char *install_dir,
+    void (*progress_cb)(void *ctx, int pct, const char *status, const char *log_line),
+    void *ctx, char *why, size_t why_cap) {
+    char final_exe[1024], tmp_exe[1024];
+    snprintf(final_exe, sizeof(final_exe), "%.950s\\asphalt6_win.exe", install_dir);
+    snprintf(tmp_exe, sizeof(tmp_exe), "%.950s\\asphalt6_win.exe.tmp", install_dir);
+    if (why && why_cap) why[0] = '\0';
+
+    A6Pak setup_pak = {0}, inst_pak = {0};
+    if (!a6pak_open_self(&setup_pak)) {
+        if (progress_cb) progress_cb(ctx, 0, "Setup payload missing.",
+                                     "ERROR: This Asphalt6_Setup.exe does not contain an embedded game payload.");
+        return -1;
+    }
+    const A6PakEntry *pe_exe = a6pak_find(&setup_pak, "asphalt6_win.exe");
+    if (!pe_exe || !a6pak_find(&setup_pak, "libEGL.dll") || !a6pak_find(&setup_pak, "libGLESv2.dll")) {
+        a6pak_close(&setup_pak);
+        if (progress_cb) progress_cb(ctx, 0, "Incomplete setup payload.",
+                                     "ERROR: Embedded engine or ANGLE runtime missing.");
+        return -1;
+    }
+
+    if (progress_cb) progress_cb(ctx, 10, "Reading the game data from the installed game...", NULL);
+    const char *missing = NULL;
+    if (GetFileAttributesA(final_exe) == INVALID_FILE_ATTRIBUTES) {
+        missing = "the game isn't built in its folder yet";
+    } else if (!a6pak_open(final_exe, &inst_pak)) {
+        missing = "the installed game has no data from the APK in it";
+    } else if ((missing = a6pak_apk_data_missing(&inst_pak)) != NULL) {
+        a6pak_close(&inst_pak);
+    }
+    if (missing) {
+        a6pak_close(&setup_pak);
+        if (why && why_cap) snprintf(why, why_cap, "%s", missing);
+        return 0;
+    }
+
+    if (progress_cb) progress_cb(ctx, 30, "Unpacking the new game executable...", NULL);
+    uint8_t *exe_buf = NULL;
+    size_t exe_len = 0;
+    FILE *out = NULL;
+    A6OutRec *recs = (A6OutRec *)calloc(inst_pak.count + setup_pak.count, sizeof(A6OutRec));
+    uint32_t nrecs = 0;
+    int ok = recs && a6pak_read_entry(&setup_pak, pe_exe, &exe_buf, &exe_len) &&
+             (out = fopen(tmp_exe, "wb")) != NULL && write_all_fp(out, exe_buf, exe_len);
+    free(exe_buf);
+
+    /* guest.bin first, right after the engine, as a fresh install has it. */
+    if (progress_cb) progress_cb(ctx, 50, "Copying the game data from the installed game...", NULL);
+    const A6PakEntry *ie_guest = a6pak_find(&inst_pak, "build/guest.bin");
+    int damaged = 0;
+    for (uint32_t i = 0; ok && i <= inst_pak.count; i++) {
+        const A6PakEntry *ie = i == 0 ? ie_guest : &inst_pak.entries[i - 1];
+        if (i > 0 && (ie == ie_guest || !a6pak_is_apk_entry(ie->name))) continue;
+        int rc = a6out_copy_entry(out, &recs[nrecs++], &inst_pak, ie);
+        if (rc == 0) damaged = 1;
+        ok = rc > 0;
+    }
+    a6pak_close(&inst_pak);
+
+    if (progress_cb) progress_cb(ctx, 80, "Embedding the graphics runtime...", NULL);
+    for (uint32_t i = 0; ok && i < setup_pak.count; i++) {
+        const A6PakEntry *se = &setup_pak.entries[i];
+        if (se == pe_exe) continue;
+        ok = a6out_copy_entry(out, &recs[nrecs++], &setup_pak, se) > 0;
+    }
+    a6pak_close(&setup_pak);
+
+    if (ok) ok = a6out_finish(out, recs, nrecs);
+    if (out && fclose(out) != 0) ok = 0;
+    for (uint32_t i = 0; recs && i < nrecs; i++) free(recs[i].name);
+    free(recs);
+
+    if (damaged) {
+        DeleteFileA(tmp_exe);
+        if (why && why_cap) snprintf(why, why_cap, "the installed game's data from the APK is damaged");
+        return 0;
+    }
+    if (!ok || !MoveFileExA(tmp_exe, final_exe, MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileA(tmp_exe);
+        if (progress_cb) progress_cb(ctx, 0, "Update failed.",
+                                     "ERROR: Failed to write the updated asphalt6_win.exe.");
+        return -1;
+    }
+    if (progress_cb) progress_cb(ctx, 100, "Updated without the APK", NULL);
+    return 1;
 }
 
 /* Holds <install_dir>\asphalt6_setup.lock open until this process ends. Windows closes

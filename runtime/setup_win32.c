@@ -320,7 +320,8 @@ int main(int argc, char **argv) {
 
     if (g_app.prepare_mode) {
         /* Windowless setup step for launchers: --prepare [--game <apk>] --install-dir <dir>.
-         * Exits 0 right away when <dir> already holds this setup's build, without the APK. */
+         * Exits 0 right away when <dir> already holds this setup's build. Without --game, a
+         * new engine is rebuilt from the APK data kept in <dir>\asphalt6_win.exe. */
         if (GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_UNKNOWN &&
             AttachConsole(ATTACH_PARENT_PROCESS)) {
             freopen("CONOUT$", "w", stdout);
@@ -342,7 +343,18 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (!g_app.cli_apk[0]) {
-            printf("The game needs to be set up again from your Asphalt 6 HD 3.7.0 APK. Pick it on the game's page.\n");
+            /* An update: reuse what the last build took from the APK, kept in the installed exe. */
+            char why[160];
+            int rc = installer_rebuild_standalone_from_install(g_app.cli_dir, on_progress, NULL,
+                                                               why, sizeof(why));
+            if (rc > 0) return 0;
+            if (rc < 0) {
+                printf("Couldn't write the updated game to %s. Make sure there's free space, then set it up again.\n",
+                       g_app.cli_dir);
+                return 1;
+            }
+            printf("The game needs to be set up again from your Asphalt 6 HD 3.7.0 APK: %s. Pick it on the game's page.\n",
+                   why);
             return 4;
         }
         DWORD rc = setup_worker_thread(NULL);
