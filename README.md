@@ -25,7 +25,7 @@ Download the single standalone **`Asphalt6_Setup.exe`** (`~26.8 MiB`) from GitHu
    - Your install folder contains **only `asphalt6_win.exe`** (and `gamedata/` once copied manually or downloaded).
 4. Launch `asphalt6_win.exe`: if `gamedata/` isn't placed manually, the in-game Gameloft Installer prompts to download & CRC-verify the official game data from Gameloft servers, then shows **`Touch OK and start playing!`**.
 
-Release packaging command (maintainers): `python -u tools\pack_setup.py --jobs 8`.
+Release packaging command (maintainers): `python -u tools\pack_setup.py --jobs 8`. It also writes `build\Asphalt6-Native-<version>-Windows-x64.zip` (`Asphalt6_Setup.exe` with `recomplauncher.json` on top) for RecompLauncher: attach it to every release next to `Asphalt6_Setup.exe`.
 
 ### Option B — Command-Line / Developer Build
 
